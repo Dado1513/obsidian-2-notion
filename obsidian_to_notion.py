@@ -41,15 +41,23 @@ def upload_to_github(file_path, config, unique_path):
         with open(file_path, 'rb') as f:
             content = base64.b64encode(f.read()).decode('utf-8')
         
-        # Sanitize paths for GitHub
+        # Sanitize paths for GitHub - KEEP URL ENCODING
         safe_unique_path = unique_path.replace('\\', '/').strip('./')
         if safe_unique_path == '' or safe_unique_path == '.':
             safe_unique_path = 'root'
         
-        safe_file_name = urllib.parse.quote(file_name)
-        path = f"{config.get('folder', 'uploads')}/{safe_unique_path}/{safe_file_name}".replace('//', '/')
+        # URL encode each part of the path separately
+        path_parts = safe_unique_path.split('/')
+        encoded_path_parts = [urllib.parse.quote(part, safe='') for part in path_parts]
+        safe_unique_path = '/'.join(encoded_path_parts)
         
-        url = f"https://api.github.com/repos/{config['repo_owner']}/{config['repo_name']}/contents/{path}"
+        # URL encode the filename
+        safe_file_name = urllib.parse.quote(file_name, safe='')
+        
+        # Build the path for GitHub API
+        github_api_path = f"{config.get('folder', 'uploads')}/{safe_unique_path}/{safe_file_name}".replace('//', '/')
+        
+        url = f"https://api.github.com/repos/{config['repo_owner']}/{config['repo_name']}/contents/{github_api_path}"
         
         headers = {
             'Authorization': f"token {config['github_token']}",
@@ -65,19 +73,86 @@ def upload_to_github(file_path, config, unique_path):
         response = requests.put(url, headers=headers, json=data, timeout=60)
         
         if response.status_code in [200, 201]:
-            raw_url = f"https://raw.githubusercontent.com/{config['repo_owner']}/{config['repo_name']}/{config.get('branch', 'main')}/{path}"
+            # Return raw URL with proper encoding - use just 'main', not 'refs/heads/main'
+            raw_url = f"https://raw.githubusercontent.com/{config['repo_owner']}/{config['repo_name']}/{config.get('branch', 'main')}/{github_api_path}"
+            print(f"  Uploaded to: {raw_url}")
             return raw_url
         elif response.status_code == 422:
             print(f"  File already exists")
-            raw_url = f"https://raw.githubusercontent.com/{config['repo_owner']}/{config['repo_name']}/{config.get('branch', 'main')}/{path}"
+            raw_url = f"https://raw.githubusercontent.com/{config['repo_owner']}/{config['repo_name']}/{config.get('branch', 'main')}/{github_api_path}"
             return raw_url
         else:
-            print(f"  GitHub error: {response.status_code}")
+            print(f"  GitHub error: {response.status_code} - {response.text}")
             return None
             
     except Exception as e:
         print(f"  GitHub error: {e}")
+        import traceback
+        traceback.print_exc()
         return None
+
+# def upload_to_github(file_path, config, unique_path):
+#     """Upload to GitHub repository with unique path."""
+#     try:
+#         import base64
+#         import requests
+        
+#         path_obj = Path(file_path)
+#         if not path_obj.exists():
+#             print(f"  File not found: {file_path}")
+#             return None
+        
+#         if not path_obj.is_file():
+#             print(f"  Not a file (is directory): {file_path}")
+#             return None
+        
+#         file_name = path_obj.name
+#         file_size = os.path.getsize(file_path)
+        
+#         if file_size > 100 * 1024 * 1024:
+#             print(f"  File too large for GitHub (>100MB): {file_size / 1024 / 1024:.1f}MB")
+#             return None
+        
+#         with open(file_path, 'rb') as f:
+#             content = base64.b64encode(f.read()).decode('utf-8')
+        
+#         # Sanitize paths for GitHub
+#         safe_unique_path = unique_path.replace('\\', '/').strip('./')
+#         if safe_unique_path == '' or safe_unique_path == '.':
+#             safe_unique_path = 'root'
+        
+#         safe_file_name = urllib.parse.quote(file_name)
+#         path = f"{config.get('folder', 'uploads')}/{safe_unique_path}/{safe_file_name}".replace('//', '/')
+        
+#         url = f"https://api.github.com/repos/{config['repo_owner']}/{config['repo_name']}/contents/{path}"
+        
+#         headers = {
+#             'Authorization': f"token {config['github_token']}",
+#             'Accept': 'application/vnd.github.v3+json'
+#         }
+        
+#         data = {
+#             'message': f'Upload {file_name}',
+#             'content': content,
+#             'branch': config.get('branch', 'main')
+#         }
+        
+#         response = requests.put(url, headers=headers, json=data, timeout=60)
+        
+#         if response.status_code in [200, 201]:
+#             raw_url = f"https://raw.githubusercontent.com/{config['repo_owner']}/{config['repo_name']}/{config.get('branch', 'main')}/{path}"
+#             return raw_url
+#         elif response.status_code == 422:
+#             print(f"  File already exists")
+#             raw_url = f"https://raw.githubusercontent.com/{config['repo_owner']}/{config['repo_name']}/{config.get('branch', 'main')}/{path}"
+#             return raw_url
+#         else:
+#             print(f"  GitHub error: {response.status_code}")
+#             return None
+            
+#     except Exception as e:
+#         print(f"  GitHub error: {e}")
+#         return None
 
 
 class FileUploader:
@@ -392,6 +467,12 @@ class ObsidianToNotionConverter(mistune.HTMLRenderer):
     def image(self, text, url="", title=None, **kwargs):
         """Handle image embeds - src should now be a GitHub URL."""
         # print(url)
+        if self.debug:
+            print(f"\n=== IMAGE DEBUG ===")
+            print(f"  URL: {url}")
+            print(f"  URL length: {len(url)}")
+            print(f"  URL type: {type(url)}")
+            print(f"==================")
         if not url or not url.strip():
             return ""
 
@@ -468,13 +549,14 @@ class ObsidianToNotionConverter(mistune.HTMLRenderer):
     
     def link(self, text, link=None, title=None, url=None, **kwargs):
         """Handle links - note mistune v3 has text FIRST, then link."""
-        #print(f"=== LINK DEBUG ===")
-        #print(f"  text: {repr(text)}")
-        #print(f"  link: {repr(link)}")
-        #print(f"  title: {repr(title)}")
-        #print(f"  url: {repr(url)}")    
-        #print(f"  kwargs: {kwargs}")
-        #print(f"==================")
+        if self.debug:
+            print(f"=== LINK DEBUG ===")
+            print(f"  text: {repr(text)}")
+            print(f"  link: {repr(link)}")
+            print(f"  title: {repr(title)}")
+            print(f"  url: {repr(url)}")    
+            print(f"  kwargs: {kwargs}")
+            print(f"==================")
         
         if not url or not url.strip():
             return text or ""
@@ -527,7 +609,10 @@ class ObsidianToNotionConverter(mistune.HTMLRenderer):
             return placeholder
         
         # Extract links first (not including images which start with !)
-        text = re.sub(r'(?<!\!)\[([^\]]+)\]\(([^)]+)\)', save_link, text)
+        # text = re.sub(r'(?<!\!)\[([^\]]+)\]\(([^)]+)\)', save_link, text)
+        # text = re.sub(r'(?<!\!)\[([^\]]+)\]\((.+?)\)(?!\()', save_link, text)
+        text = re.sub(r'(?<!\!)\[([^\]]+)\]\(([^)]+\)[^)]*|[^)]+)\)', save_link, text)
+
         
         # Now process other formatting
         parts = re.split(r'(`[^`]+`)', text)
@@ -638,29 +723,38 @@ def parse_markdown_to_blocks(content, vault_dir, markdown_file_path, page_map, u
     """Parse markdown to Notion blocks - uploads images and updates markdown with URLs."""
         
     # DEBUG: Check what links look like in original content
-    #print("\n=== ORIGINAL MARKDOWN LINKS ===")
-    #original_links = re.findall(r'\[([^\]]+)\]\(([^)]+)\)', content)
-    #for i, (text, url) in enumerate(original_links[:5], 1):
-    #    print(f"{i}. [{text}]({url})")
-    #print("=" * 40)
+    if debug:
+        print("\n=== ORIGINAL MARKDOWN LINKS ===")
+        original_links = re.findall(r'(?<!!)\[([^\]]+)\]\(([^)]+)\)', content)
+        for i, (text, url) in enumerate(original_links[:5], 1):
+            print(f"{i}. [{text}]({url})")
+        print("=" * 40)
+
     
     # Convert Obsidian links FIRST
     content = convert_obsidian_links(content, vault_dir, page_map)
     
-    # DEBUG: Check what links look like after conversion
-    #print("\n=== AFTER OBSIDIAN CONVERSION ===")
-    #converted_links = re.findall(r'\[([^\]]+)\]\(([^)]+)\)', content)
-    #for i, (text, url) in enumerate(converted_links[:5], 1):
-    #    print(f"{i}. [{text}]({url})")
-    #print("=" * 40)
+    if debug:
+        # DEBUG: Check what links look like after conversion
+        print("\n=== AFTER OBSIDIAN CONVERSION ===")
+        converted_links = re.findall(r'\[([^\]]+)\]\(([^)]+)\)', content)
+        for i, (text, url) in enumerate(converted_links[:5], 1):
+            print(f"{i}. [{text}]({url})")
+        print("=" * 40)
 
     # UPLOAD IMAGES FIRST (before any other processing)
     uploaded_images = {}
     
     def upload_and_replace_image(match):
+        full_match = match.group(0)
+
         alt = match.group(1)
-        src = match.group(2)
-        
+        # src = match.group(2)
+        src_match = re.search(r'\]\((.+)\)$', full_match)
+        if not src_match:
+            return full_match
+    
+        src = src_match.group(1)
         if debug:
             print(f"\n  Found image: {src}")
         
@@ -683,8 +777,8 @@ def parse_markdown_to_blocks(content, vault_dir, markdown_file_path, page_map, u
         if file_path and Path(file_path).is_file() and uploader:
             unique_path = get_unique_path_for_file(file_path, vault_dir)
             file_name = Path(file_path).name
-            
-            print(f"  Uploading image: {file_name}...", end=" ")
+            if debug:
+                print(f"  Uploading image: {file_name}...", end=" ")
             file_url = uploader.upload(file_path, unique_path)
             
             if file_url:
@@ -700,17 +794,20 @@ def parse_markdown_to_blocks(content, vault_dir, markdown_file_path, page_map, u
             return f"![{alt}]({src})"
     
     # Replace all image references with GitHub URLs
-    content = re.sub(r'!\[([^\]]*)\]\(([^\)]+)\)', upload_and_replace_image, content)
+    #content = re.sub(r'!\[([^\]]*)\]\(([^\)]+)\)', upload_and_replace_image, content)
+    content = re.sub(r'!\[([^\]]*)\]\((.+?)\)(?=\s|$|\n|!|\[)', upload_and_replace_image, content)
+    #content = re.sub(r'!\[[^\]]*\]\(.+?\)(?=\s|$|\n)', upload_and_replace_image, content, flags=re.MULTILINE)
 
     if uploaded_images:
         print(f"\n=== UPLOADED {len(uploaded_images)} IMAGES ===")
-
+    
+    if debug:
     # DEBUG: Check links after image upload
-    print("\n=== AFTER IMAGE UPLOAD ===")
-    after_upload_links = re.findall(r'(?<!!)\[([^\]]+)\]\(([^)]+)\)', content)
-    for i, (text, url) in enumerate(after_upload_links[:5], 1):
-        print(f"{i}. [{text}]({url})")
-    print("=" * 40)
+        print("\n=== AFTER IMAGE UPLOAD ===")
+        after_upload_links = re.findall(r'(?<!!)\[([^\]]+)\]\(([^)]+)\)', content)
+        for i, (text, url) in enumerate(after_upload_links[:5], 1):
+            print(f"{i}. [{text}]({url})")
+        print("=" * 40)
     
     # Now parse the updated markdown (with GitHub URLs)
     converter = ObsidianToNotionConverter(vault_dir, markdown_file_path, None, debug)
@@ -754,8 +851,35 @@ def create_notion_page(notion, database_id, title, content, vault_dir, markdown_
             batch_size = 100
             for i in range(0, len(blocks), batch_size):
                 batch = blocks[i:i+batch_size]
-                notion.blocks.children.append(block_id=page_id, children=batch)
-                time.sleep(0.3)
+                if debug:
+                    print(f"  Uploading batch {i//batch_size + 1} ({len(batch)} blocks)...")
+
+                if debug:
+                    # Debug each block
+                    for j, block in enumerate(batch):
+                        if block.get('type') == 'image':
+                            url = block.get('image', {}).get('external', {}).get('url', '')
+                            print(f"    Block {j}: Image with URL length {len(url)}")
+                            if len(url) > 200:
+                                print(f"      URL (first 100): {url[:100]}")
+                                print(f"      URL (last 100): {url[-100:]}")
+                
+                try:
+                    notion.blocks.children.append(block_id=page_id, children=batch)
+                    time.sleep(0.3)
+                except Exception as e:
+                    print(f"  ✗ Error uploading batch: {e}")
+                    # Try uploading blocks one by one to find the problematic one
+                    for k, single_block in enumerate(batch):
+                        try:
+                            notion.blocks.children.append(block_id=page_id, children=[single_block])
+                            print(f"    Block {k} OK")
+                        except Exception as block_error:
+                            print(f"    ✗ Block {k} FAILED: {block_error}")
+                            if single_block.get('type') == 'image':
+                                img_url = single_block.get('image', {}).get('external', {}).get('url', '')
+                                print(f"      Problematic image URL: {img_url}")
+                    raise
         
         return page_id, page_url
     
